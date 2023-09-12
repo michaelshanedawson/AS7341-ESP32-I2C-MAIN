@@ -1,17 +1,37 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include "driver/spi_master.h"
 #include "driver/gpio.h"
+#include "driver/i2c.h"
 
-/*Pin Configurations for the SPI bus*/
-#define SPI_HOST SPI2_HOST
-#define PIN_NUM_MISO 19 //MISO Pin
-#define PIN_NUM_MOSI 7 //MOSI Pin
-#define PIN_NUM_CS 0 //CS (SS) Pin
-#define PIN_NUM_CLK 1 //SPI CLK Pin
+/*Pin configurations for the I2C Bus*/
+#define PIN_NUM_SCL 6 //I2C Clock pin - pull up to 3.3V with a 4.7KΩ resistor
+#define PIN_NUM_SDA 5 //I2C Data pin - pull up to 3.3V with a 4.7KΩ resistor
+
+/*I2C Address of the AS7341 device*/
+#define DEV_ADDR 0x39 //This is the default I2C address for the Adafruit module
+#define MASTER_PORT 0
+#define I2C_MASTER_TIMEOUT_MS 1000
+
+/*Register addresses for the AS7341*/
+#define REG_ENABLE 0x80 //Register to enable the device - R/W - Needed to power the device up and set basic options
+#define REG_AUXID 0x90 //Register for the auxillary ID - Read only
+#define REG_REVID 0x91 //Register for the revision number of the device - Read only
+#define REG_ID 0x92 //Register for the device ID - Read only
 
 #define generic_gpio_pin 3
+
+
+void i2c_write(uint8_t devreg, uint8_t i2c_data)
+{    
+    uint8_t write_buf[2] = {devreg, i2c_data};
+    i2c_master_write_to_device(MASTER_PORT, DEV_ADDR, write_buf, sizeof(write_buf), I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);   
+}
+
+static esp_err_t i2c_read(uint8_t devreg, uint8_t *data, size_t len)
+{
+    return i2c_master_write_read_device(MASTER_PORT, DEV_ADDR, &devreg, 1, data, len, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
+}
 
 /*GPIO Pulse*/
 void pulse(uint8_t pin)
@@ -20,33 +40,7 @@ void pulse(uint8_t pin)
     gpio_set_level(pin, 0);
 }
 
-void spi_transmit(uint8_t data1, uint8_t data2, spi_device_handle_t spi)
-{    
-    
-    esp_err_t ret;
-    /*When using SPI_TRANS_CS_KEEP_ACTIVE, bus must be locked/acquired*/
-    spi_device_acquire_bus(spi, portMAX_DELAY);
 
-    /*Perform the SPI transaction to send the data.*/
-    spi_transaction_t t;
-    memset(&t, 0, sizeof(t));       //Zero out the transaction
-    t.length=8;                     //Data Length in bits
-    t.tx_buffer=&data1;               //The data is the calculated delta phase
-    t.user=(void*)0;                //D/C needs to be set to 0
-    t.flags = SPI_TRANS_CS_KEEP_ACTIVE  ;   //Keep CS active after data transfer
-    ret=spi_device_polling_transmit(spi, &t);  //Transmit!
-    assert(ret==ESP_OK);            //Should have had no issues.
-   
-    memset(&t, 0, sizeof(t));       //Zero out the transaction
-    t.length=8;                     //Command is 8 bits
-    t.tx_buffer=&data2;               //The data is the phase data
-    t.user=(void*)0;                //D/C needs to be set to 0
-    ret=spi_device_polling_transmit(spi, &t);  //Transmit!
-    assert(ret==ESP_OK);            //Should have had no issues.
-
-    /*Release SPI bus*/
-    spi_device_release_bus(spi);
-}
 
 void app_main(void)
 {
@@ -55,38 +49,29 @@ void app_main(void)
     gpio_set_direction(generic_gpio_pin, GPIO_MODE_OUTPUT);
     gpio_set_level(generic_gpio_pin, 0);
 
-    /*Initializes the SPI driver*/
-    esp_err_t ret;
-    spi_device_handle_t spi;
-
-    /*Configures the SPI driver*/
-    spi_bus_config_t buscfg={
-        .miso_io_num=PIN_NUM_MISO,
-        .mosi_io_num=PIN_NUM_MOSI,
-        .sclk_io_num=PIN_NUM_CLK,
-        .quadwp_io_num=-1,
-        .quadhd_io_num=-1,
-        .max_transfer_sz=0,
+    /*Configure the I2C driver*/    
+    i2c_config_t i2cConf = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = PIN_NUM_SDA, //GPIO for the SDA line
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_io_num = PIN_NUM_SCL, //GPIO for the SCL line
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = 2 * 1000 * 1000,
     };
 
-    /*Device specific SPI settings*/
-    spi_device_interface_config_t devcfg={
-        .clock_speed_hz=20*1000*1000,           //Clock out at 20 MHz
-        .mode=0,                                //SPI mode 0
-        .flags=SPI_DEVICE_BIT_LSBFIRST,         //This tells the SPI driver to send the data LSB first, remove for the standard MSB format
-        .spics_io_num=PIN_NUM_CS,               //CS pin
-        .queue_size=7,                          //We want to be able to queue 7 transactions at a time
-    };
+    /*Initialize the I2C driver*/
+    i2c_param_config(MASTER_PORT, &i2cConf);
 
-    /*Initialize the SPI bus*/
-    ret=spi_bus_initialize(SPI_HOST, &buscfg, SPI_DMA_CH_AUTO);
-    ESP_ERROR_CHECK(ret);
+    /*Install the I2C driver*/
+    i2c_driver_install(MASTER_PORT,i2cConf.mode,0,0,0);
 
-    /*Attach the AD9850 to the SPI bus*/
-    ret=spi_bus_add_device(SPI_HOST, &devcfg, &spi);
-    ESP_ERROR_CHECK(ret);    
 
-    
-    spi_transmit(5, 0, spi);
+    /*Need to write a wake up command to the AS7341 prior to use*/
+    uint8_t data[1];
+    uint8_t dataByte = 0b01011001; 
+    i2c_write(REG_ENABLE,dataByte);
+    printf("Device configuration is: %u\n", dataByte);
+    uint8_t deviceID = i2c_read(REG_ID, data, 1);
+    printf("Device ID is: %u\n", deviceID);
     }
 
