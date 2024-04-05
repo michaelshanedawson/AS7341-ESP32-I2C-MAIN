@@ -4,7 +4,7 @@
   "idf.openOcdConfigs": [
     "board/esp32c3-bridge.cfg"
   ],
-  "idf.portWin": "COM6",
+  "idf.portWin": "COM12",
   "files.associations": {
     "spi_master.h": "c"
   },
