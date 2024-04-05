@@ -3,4 +3,5 @@ This repository contains drivers and example code for the AS7341 11-Channel Mult
 
 ### CHANGELOG ###
 v1.0 - 4/5/2024 - MSD - Initial version. Utilizes the latest ESP IDF, version 5.2.1 due to updated I2C driver library. This code will initialize the I2C driver, attach the device and read the device ID from the associated register.
+v2.0 - 4/5/2024 - MSD - The unit is reading spectral data and outputting the raw value to the serial console. Really sensitive and small changes are detected. There is more work to do like organize the code better and get better understanding of how to interpret the data.
 
